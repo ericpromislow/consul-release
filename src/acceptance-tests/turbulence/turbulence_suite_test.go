@@ -12,7 +12,6 @@ import (
 	. "github.com/onsi/gomega/gexec"
 
 	"testing"
-
 )
 
 func TestTurbulence(t *testing.T) {
@@ -29,9 +28,7 @@ var (
 	consulRelease    = fmt.Sprintf("consul-%s", generator.RandomName())
 	consulDeployment = consulRelease
 
-	turbulenceDeployment  = fmt.Sprintf("turb-%s", generator.RandomName())
-	turbulenceReleaseName = "turbulence"
-	turbulenceReleasePath = "http://bosh.io/d/github.com/cppforlife/turbulence-release?v=0.4"
+	turbulenceDeployment = fmt.Sprintf("turb-%s", generator.RandomName())
 
 	directorUUIDStub, consulNameOverrideStub, turbulenceNameOverrideStub string
 
@@ -71,8 +68,10 @@ var _ = BeforeSuite(func() {
 		turbulenceNameOverrideStub,
 	)
 
-	//By("uploading the turbulence release")
-	//Expect(bosh.Command("-n", "upload", "release", turbulenceReleasePath)).To(Exit(0))
+	fmt.Println("uploading turb")
+	By("uploading the turbulence release")
+	Expect(bosh.Command("-n", "upload", "release", config.TurbulenceReleaseUrl)).To(Exit(0))
+	fmt.Println("done uploading turb")
 
 	By("deploying the turbulence release")
 	Expect(bosh.Command("-n", "deploy")).To(Exit(0))
@@ -94,6 +93,9 @@ var _ = AfterSuite(func() {
 
 	By("deleting the cpi release")
 	bosh.Command("-n", "delete", "release", config.CPIReleaseName)
+
+	By("deleting the turbulence release")
+	bosh.Command("-n", "delete", "release", config.TurbulenceReleaseName)
 
 })
 
@@ -131,5 +133,6 @@ func uploadBoshCpiRelease() {
 		panic("missing required cpi release name")
 	}
 
-	//Expect(bosh.Command("-n", "upload", "release", config.CPIReleaseUrl, "--skip-if-exists")).To(Exit(0))
+	Expect(bosh.Command("-n", "upload", "release", config.CPIReleaseUrl, "--skip-if-exists")).To(Exit(0))
+	fmt.Println("Finished downloading remote release")
 }

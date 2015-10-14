@@ -3,21 +3,23 @@ package turbulence_test
 import (
 	"acceptance-tests/helpers"
 	"acceptance-tests/turbulence/client"
+	"time"
+
+	"fmt"
 
 	capi "github.com/hashicorp/consul/api"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
-	"fmt"
 )
 
 var _ = Describe("KillVm", func() {
 	var (
-		runner          *helpers.AgentRunner
+		runner         *helpers.AgentRunner
 		consulManifest = new(helpers.Manifest)
-		turbulenceUrl string
+		turbulenceUrl  string
 
-		consulClientIPs []string
+		consulClientIPs  []string
 		killedConsulUrls []string
 		aliveConsulUrls  []string
 	)
@@ -81,31 +83,42 @@ var _ = Describe("KillVm", func() {
 			_, err := keyValueClient.Put(pair, nil)
 			Expect(err).ToNot(HaveOccurred())
 
-			fmt.Println("Starting consistently")
-			consistent := make(chan int)
-			go func() {
-				defer GinkgoRecover()
-				Consistently(func() ([]byte, error) {
-					fmt.Println("Consistent ping")
-					resultPair, _, err := keyValueClient.Get(consatsKey, nil)
-					if err != nil {
-						fmt.Printf("Error is %s\n", err)
-					}
-					fmt.Printf("Result pair is %s\n", resultPair.Value)
-					return resultPair.Value, err
-				}, 10, 1).Should(Equal(consatsValue))
-				close(consistent)
-			} ()
-
 			turbulenceOperationTimeout := helpers.GetTurbulenceOperationTimeout(config)
 			turbulenceClient := client.NewClient(turbulenceUrl, turbulenceOperationTimeout)
 
 			fmt.Println("Killing indices")
+
 			err = turbulenceClient.KillIndices(consulDeployment, "consul_z1", []int{0})
 			Expect(err).ToNot(HaveOccurred())
-			fmt.Println("Waiting test to finish")
-			<- consistent
-			fmt.Println("Exit test")
+
+			fmt.Println("Checking for eventual consistency")
+			Eventually(func() ([]byte, error) {
+				fmt.Println("Consistent ping")
+				resultPair, _, err := keyValueClient.Get(consatsKey, nil)
+				if err != nil {
+					fmt.Printf("Error is %s\n", err)
+				}
+				if resultPair != nil {
+					fmt.Printf("Result pair is %s\n", resultPair.Value)
+				}
+				return resultPair.Value, err
+			}, 5*time.Second, 1*time.Second).Should(Equal(consatsValue))
+
+			// go func() {
+			// 	defer GinkgoRecover()
+			// 	Consistently(func() ([]byte, error) {
+			// 		fmt.Println("Consistent ping")
+			// 		resultPair, _, err := keyValueClient.Get(consatsKey, nil)
+			// 		if err != nil {
+			// 			fmt.Printf("Error is %s\n", err)
+			// 			return nil, err
+			// 		}
+			// 		fmt.Printf("Result pair is %s\n", resultPair.Value)
+			// 		return resultPair.Value, err
+			// 	}, 10, 1).Should(Equal(consatsValue))
+			// 	close(consistent)
+			// }()
+
 		})
 	})
 })
