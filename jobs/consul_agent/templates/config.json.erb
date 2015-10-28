@@ -42,7 +42,7 @@
     "data_dir" => "/var/vcap/store/consul_agent",
     "log_level" => p("consul.agent.log_level"),
     "node_name" => "#{name.gsub('_', '-')}-#{spec.index}",
-    "server" => server,
+    # "server" => server,
     "ports" => {
       "dns" => 53,
     },
@@ -51,7 +51,7 @@
     # restarting
     "rejoin_after_leave" => true,
 
-    "retry_join" => lan_servers,
+    # "retry_join" => lan_servers,
 
     # explicitly listen and advertise this job's IP; otherwise consul will pick
     # an external IP, and possibly pick the wrong one (e.g. if containers are
@@ -86,9 +86,9 @@ if p("consul.require_ssl")
   })
 end
 
-if server
-  config["bootstrap_expect"] = lan_servers.size
-end
+# if server
+#   config["bootstrap_expect"] = lan_servers.size
+# end
 
   config.to_json
 %>

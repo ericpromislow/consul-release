@@ -1,0 +1,31 @@
+#!/bin/bash -e
+
+PKG=/var/vcap/packages/consul
+
+attempts=10 #put in config??
+script_lifetime=40
+echo "Starting consul killer"
+for i in $(seq 1 ${script_lifetime}); do
+  status_response_code=$(curl -sL http://127.0.0.1:8500/v1/status/leader -w '%{http_code}' -o /dev/null; exit 0)
+
+  if [ "${status_response_code}" = "200" ]; then
+    leader=$(curl -s http://127.0.0.1:8500/v1/status/leader;  exit 0)
+    leader="${leader%\"}"
+    leader="${leader#\"}"
+    echo "Leader killer found leader: ${leader}"
+    if [ "${leader}" = "" ]; then
+      attempts=$(( ${attempts} - 1 ))
+    else
+      attempts=10
+    fi
+  else
+    attempts=$(( ${attempts} - 1 ))
+  fi
+
+  if [ "${attempts}" = "0" ]; then
+    $PKG/bin/consul leave
+    exit 0
+  fi
+
+  sleep 1
+done

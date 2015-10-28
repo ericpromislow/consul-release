@@ -66,6 +66,7 @@ var _ = Describe("Scaling up Instances", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resultPair.Value).To(Equal(consatsValue))
 
+			By("scaling up to 5 nodes")
 			bosh.GenerateAndSetDeploymentManifest(
 				consulManifest,
 				consulManifestGeneration,
@@ -77,7 +78,6 @@ var _ = Describe("Scaling up Instances", func() {
 				consulNameOverrideStub,
 			)
 
-			By("deploying")
 			Expect(bosh.Command("-n", "deploy")).To(gexec.Exit(0))
 			Expect(len(consulManifest.Properties.Consul.Agent.Servers.Lans)).To(Equal(5))
 
@@ -89,7 +89,7 @@ var _ = Describe("Scaling up Instances", func() {
 		})
 	})
 
-	Describe("scaling from 1 node to 3", func() {
+	Describe("checking data persistence when scaling from 1 node to 3", func() {
 		It("succesfully scales from 1 to multiple consul nodes", func() {
 			By("deploying 1 node")
 			bosh.GenerateAndSetDeploymentManifest(
@@ -113,21 +113,6 @@ var _ = Describe("Scaling up Instances", func() {
 			runner = helpers.NewAgentRunner(consulServerIPs, config.BindAddress)
 			runner.Start()
 
-			bosh.GenerateAndSetDeploymentManifest(
-				consulManifest,
-				consulManifestGeneration,
-				directorUUIDStub,
-				helpers.InstanceCount3NodesStubPath,
-				helpers.PersistentDiskStubPath,
-				config.IAASSettingsConsulStubPath,
-				helpers.PropertyOverridesStubPath,
-				consulNameOverrideStub,
-			)
-
-			By("deploying 3 nodes")
-			Expect(bosh.Command("-n", "deploy")).To(gexec.Exit(0))
-			Expect(len(consulManifest.Properties.Consul.Agent.Servers.Lans)).To(Equal(3))
-
 			By("writing the value to consul")
 			consatsClient := runner.NewClient()
 
@@ -139,9 +124,25 @@ var _ = Describe("Scaling up Instances", func() {
 			_, err := keyValueClient.Put(pair, nil)
 			Expect(err).ToNot(HaveOccurred())
 
+			By("scaling up to 3 nodes")
+			bosh.GenerateAndSetDeploymentManifest(
+				consulManifest,
+				consulManifestGeneration,
+				directorUUIDStub,
+				helpers.InstanceCount3NodesStubPath,
+				helpers.PersistentDiskStubPath,
+				config.IAASSettingsConsulStubPath,
+				helpers.PropertyOverridesStubPath,
+				consulNameOverrideStub,
+			)
+
+			Expect(bosh.Command("-n", "deploy")).To(gexec.Exit(0))
+			Expect(len(consulManifest.Properties.Consul.Agent.Servers.Lans)).To(Equal(3))
+
 			By("reading the value from consul")
 			resultPair, _, err := keyValueClient.Get(consatsKey, nil)
 			Expect(err).ToNot(HaveOccurred())
+			Expect(resultPair).ToNot(BeNil())
 			Expect(resultPair.Value).To(Equal(consatsValue))
 		})
 	})

@@ -10,6 +10,7 @@ templates:
   server.key.erb: config/certs/server.key
   agent.crt.erb: config/certs/agent.crt
   agent.key.erb: config/certs/agent.key
+  consul_killer.sh.erb: bin/consul_killer
 
 packages:
   - consul-common
@@ -46,7 +47,7 @@ properties:
 
   consul.agent.sync_timeout_in_seconds:
     description: "Time to wait for a consul node to finish syncing with the cluster in seconds"
-    default: 60
+    default: 10
 
   consul.require_ssl:
     description: "enable ssl for all communication with consul"

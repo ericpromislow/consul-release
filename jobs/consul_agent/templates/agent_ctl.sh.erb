@@ -16,11 +16,13 @@
     false
   end
 %>
+set -eux
 
 LOG_DIR=/var/vcap/sys/log/consul_agent
 RUN_DIR=/var/vcap/sys/run/consul_agent
 DATA_DIR=/var/vcap/store/consul_agent
 CONF_DIR=/var/vcap/jobs/consul_agent/config
+SCRIPT_DIR=/var/vcap/jobs/consul_agent/bin
 CERT_DIR=$CONF_DIR/certs
 
 PKG=/var/vcap/packages/consul
@@ -44,10 +46,40 @@ stop_consul() {
   wait ${consul_pid}
 }
 
+leave_consul() {
+  local consul_pid=$1
+  if ! $PKG/bin/consul leave; then
+    kill ${consul_pid} || true
+  fi
+  wait ${consul_pid}
+}
+
+recreate_data_dir() {
+  rm -rf $DATA_DIR
+  mkdir -p $DATA_DIR
+  chown -R vcap:vcap $DATA_DIR
+}
+
+get_leader() {
+  for i in $(seq $start <%= p("consul.agent.sync_timeout_in_seconds") %>); do
+    status_response_code=$(curl -sL http://127.0.0.1:8500/v1/status/leader -w '%{http_code}' -o /dev/null; exit 0)
+    if [ "${status_response_code}" = "200" ]; then
+      leader=$(curl -s http://127.0.0.1:8500/v1/status/leader;  exit 0)
+      leader="${leader%\"}"
+      leader="${leader#\"}"
+      if [ "${leader}" != "" ]; then
+        echo "${leader}"
+        exit 0
+      fi
+    fi
+    sleep 1
+  done
+}
+
 case $1 in
   start)
 
-    pid_guard ${PIDFILE} "consul_agent"
+    pid_guard ${PID_FILE} "consul_agent"
 
     mkdir -p $LOG_DIR
     chown -R vcap:vcap $LOG_DIR
@@ -124,95 +156,172 @@ EOF
       rm -f $DATA_DIR/serf/local.keyring
     fi
 
-    chpst -u vcap:vcap $PKG/bin/consul agent \
-      -config-dir=$CONF_DIR \
-      2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
-      1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
+    if [ "$server" == true ]; then
 
-    consul_pid=$!
+      echo "STARTING AGENT CLIENT!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      echo "Cut peers $(cat ${DATA_DIR}/raft/peers.json; exit 0)"
+      echo "Rm data $(rm $DATA_DIR/raft/peers.json; exit 0)"
 
-    trap "stop_consul $consul_pid" ERR
+      chpst -u vcap:vcap $PKG/bin/consul agent \
+        -config-dir=$CONF_DIR \
+        <% p("consul.agent.servers.lan").each do |server| %> \
+          -join <%= server %> \
+        <% end %> \
+        2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
+        1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
 
-    echo "Consul pid is " + $consul_pid
+      client_pid=$!
 
-    start=0
-    synced=true
-    if [ $expected -gt 0 ]; then
-      synced=false
-      consul_server_ips="<%=p("consul.agent.servers.lan").join('\\|')%>"
-      for i in $(seq <%= p("consul.agent.sync_timeout_in_seconds") %>); do
-        echo "$(date)" "Waiting to have joined one of: ${consul_join}"
-        if $PKG/bin/consul members -status=alive | grep "${consul_server_ips}"; then
-          synced=true
-          break
+      sleep 5
+
+      # attempt to connect to cluster
+      start=1
+      leader_is_found=false
+
+      echo "LETS SEE SOME MEBERS!!"
+      echo "$(${PKG}/bin/consul members)"
+
+      for i in $(seq $start <%= p("consul.agent.sync_timeout_in_seconds") %>); do
+        status_response_code=$(curl -sL http://127.0.0.1:8500/v1/status/leader -w '%{http_code}' -o /dev/null; exit 0)
+        if [ "${status_response_code}" = "200" ]; then
+          leader=$(curl -s http://127.0.0.1:8500/v1/status/leader;  exit 0)
+          leader="${leader%\"}"
+          leader="${leader#\"}"
+          echo "LALALA leader: ${leader}"
+          echo "LETS SEE SOME MEBERS AGAIN!!"
+          echo "$(${PKG}/bin/consul members)"
+          if [ "${leader}" == "" ]; then
+            echo "$(date) No leader found. Retrying..."
+          else
+            leader_is_found=true
+            break
+          fi
         fi
-
         sleep 1
-        start=$((start + 1))
       done
-    fi
 
-    if [ "$server" == "true" ]; then
-      actual=$($PKG/bin/consul members -status=alive | grep server | wc -l)
+      echo "LEAVING AGENT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      leave_consul $client_pid
+      echo "Left consul"
 
-      # only the last member of the cluster waits for leader election
-      if [[ $actual -eq $expected ]]; then
-        synced=false
+      if ${leader_is_found}; then
+         chpst -u vcap:vcap $PKG/bin/consul agent \
+           -server \
+           -config-dir=$CONF_DIR \
+           -retry-join "${leader}" \
+           2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
+           1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
+
+      # otherwise start in bootstrap 1
+      else
+        chpst -u vcap:vcap $PKG/bin/consul agent \
+           -server \
+           -bootstrap-expect 1 \
+           -config-dir=$CONF_DIR \
+           2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
+           1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
+      fi
+
+      consul_pid=$!
+
+      echo "SERVER STARTED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! sleaping before getting the leader"
+
+      leader="$(get_leader)"
+#it looks like leader is cached.
+
+      echo "LEADER ISSSSSSS ${leader}"
+
+      synced=false
+      if [ "${leader}" != "" ]; then
         for i in $(seq $start <%= p("consul.agent.sync_timeout_in_seconds") %>); do
-          info=$($PKG/bin/consul info)
+          info=$($PKG/bin/consul info; exit 0)
           commit_index=$(echo $info | grep -o "commit_index = [0-9]\+" | cut -d "=" -f2 | tr -d " ")
           last_log_index=$(echo $info | grep -o "last_log_index = [0-9]\+" | cut -d "=" -f2 | tr -d " ")
-          echo "commit_index: $commit_index"
-          echo "last_log_index: $last_log_index"
+          echo "commit_index: ${commit_index}"
+          echo "last_log_index: ${last_log_index}"
           if [[ $commit_index -ne 0 && $last_log_index -eq $commit_index ]]; then
             synced=true
             break
           fi
           sleep 1
         done
-
-        leader=$(curl -s http://127.0.0.1:8500/v1/status/leader)
-
-        if [ "$leader" == '""' ]; then
-          echo "$(date) No leader found"
-          synced=false
-        fi
       fi
-    fi
 
-    if ${synced}; then
-      echo "$(date) Consul is synced"
+      if ${synced}; then
+        echo "$(date) Consul is synced !!!!!!!!!!!!!!!!!!! starting KILLER"
+        chpst -u vcap:vcap ${SCRIPT_DIR}/consul_killer &
 
-      <% if p("consul.require_ssl") %>
-        <% if !p("consul.encrypt_keys").nil? && !p("consul.encrypt_keys").empty? %>
-          if [ "$server" == "true" ]; then
-            allkeys=$($PKG/bin/consul keyring -list | grep -oP '[^\s]{24}' | sort -u | awk '{ print $1 }')
-            extrakeys=$(echo $allkeys | xargs -n1 | grep -v '<%= p("consul.encrypt_keys").collect{|key| string_to_encrypt_key(key) }.join('\\|') %>' | cat)
-            <% p("consul.encrypt_keys").each do |encrypt_key| %>
-              $PKG/bin/consul keyring -install='<%= string_to_encrypt_key(encrypt_key) %>'
-            <% end %>
-            $PKG/bin/consul keyring -use='<%= string_to_encrypt_key(p("consul.encrypt_keys").first) %>'
-            for toremove in $extrakeys ; do
-              $PKG/bin/consul keyring -remove="$toremove"
-            done
-          fi
+        <% if p("consul.require_ssl") %>
+          <% if !p("consul.encrypt_keys").nil? && !p("consul.encrypt_keys").empty? %>
+              allkeys=$($PKG/bin/consul keyring -list | grep -oP '[^\s]{24}' | sort -u | awk '{ print $1 }')
+              extrakeys=$(echo $allkeys | xargs -n1 | grep -v '<%= p("consul.encrypt_keys").collect{|key| string_to_encrypt_key(key) }.join('\\|') %>' | cat)
+              <% p("consul.encrypt_keys").each do |encrypt_key| %>
+                $PKG/bin/consul keyring -install='<%= string_to_encrypt_key(encrypt_key) %>'
+              <% end %>
+              $PKG/bin/consul keyring -use='<%= string_to_encrypt_key(p("consul.encrypt_keys").first) %>'
+              for toremove in $extrakeys ; do
+                $PKG/bin/consul keyring -remove="$toremove"
+              done
+          <% end %>
         <% end %>
-      <% end %>
-    else
-      echo "$(date) Consul failed to sync"
-      stop_consul $consul_pid
-
-      if [ "$server" == "true" ];  then
-        if [[ $expected -gt 1 ]]; then
-          echo "Decided to delete data directory since not the only cluster member"
-          rm -rf ${DATA_DIR}/*
-        fi
+      else
+        echo "$(date) Consul failed to sync"
+        stop_consul $consul_pid
+        echo "Decided to delete data directory since not the only cluster member"
+        rm -rf ${DATA_DIR}
+        exit 1
       fi
-      exit 1
+    #run client
+    else
+      chpst -u vcap:vcap $PKG/bin/consul agent \
+        -config-dir=$CONF_DIR \
+        <% p("consul.agent.servers.lan").each do |server| %>
+        -join <%= server %> \
+        <% end %>
+        2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
+        1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
+
+        client_pid=$!
+
+        #check if it connects
+        status_response_code=$(curl -sL http://127.0.0.1:8500/v1/status/leader -w %{http_code} -o /dev/null)
+        if [ "$status_response_code" == "200" ]; then
+          leader=$(curl -s http://127.0.0.1:8500/v1/status/leader)
+          if [ "$leader" == '""' ]; then
+            echo "$(date) No leader found"
+            leader_is_found=false
+          else
+            leader_is_found=true
+          fi
+        fi
+
+        if ${leader_is_found}; then
+          echo "Connected to leader ${leader}"
+        else #if it fails to connect
+          kill client_pid
+          recreate_data_dir
+          chpst -u vcap:vcap $PKG/bin/consul agent \
+            -config-dir=$CONF_DIR \
+            <% p("consul.agent.servers.lan").each do |server| %>
+            -join <%= server %> \
+            <% end %>
+            2> >(tee -a ${LOG_DIR}/consul_agent.stderr.log | logger -p user.error -t vcap.consul-agent) \
+            1> >(tee -a ${LOG_DIR}/consul_agent.stdout.log | logger -p user.info  -t vcap.consul-agent) &
+
+          client_pid=$!
+          status_response_code=$(curl -sL http://127.0.0.1:8500/v1/status/leader -w %{http_code} -o /dev/null)
+          if [ "$status_response_code" == "200" ]; then
+            leader=$(curl -s http://127.0.0.1:8500/v1/status/leader)
+            if [ "$leader" == '""' ]; then
+              echo "$(date) No leader found"
+              exit 1
+            else
+              echo "Connected to leader ${leader}"
+            fi
+          fi
+        fi
     fi
-
     echo ${consul_pid} > $PID_FILE
-
     ;;
 
   stop)
