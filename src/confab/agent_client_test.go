@@ -21,6 +21,7 @@ var _ = Describe("agent client", func() {
 	// }
 
 	Describe("VerifyJoined", func() {
+		Before
 		Context("when the set of members includes at least one that we expect", func() {
 			It("succeeds", func() {
 				consulAPIAgent := new(fakes.FakeconsulAPIAgent)
@@ -118,7 +119,7 @@ var _ = Describe("agent client", func() {
 
 			It("returns an error", func() {
 				//TODO return a reasonably named error
-				Expect(client.VerifySynced()).To(MatchError("some error"))
+				Expect(client.VerifySynced()).To(MatchError("Log not in sync"))
 				Expect(consulRPCClient.StatsCallCount()).To(Equal(1))
 			})
 		})
@@ -138,5 +139,33 @@ var _ = Describe("agent client", func() {
 				Expect(consulRPCClient.StatsCallCount()).To(Equal(1))
 			})
 		})
+
+		Context("when the commit index is 0", func() {
+			BeforeEach(func() {
+				expectedStats = map[string]map[string]string{
+					"raft": map[string]string{
+						"commit_index":   "0",
+						"last_log_index": "0",
+					},
+				}
+
+				consulRPCClient = new(fakes.FakeconsulRPCClient)
+				consulRPCClient.StatsReturns(expectedStats, nil)
+
+				client = confab.AgentClient{
+					ConsulRPCClient: consulRPCClient,
+				}
+			})
+
+			It("immediately returns an error", func() {
+				Expect(client.VerifySynced()).To(MatchError("Commit index must not be zero"))
+				Expect(consulRPCClient.StatsCallCount()).To(Equal(1))
+			})
+		})
+	})
+
+	Describe("IsLastNode", func() {
+		XIt("works", func() {})
+
 	})
 })

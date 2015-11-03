@@ -52,10 +52,15 @@ func (c AgentClient) VerifySynced() error {
 	stats, err := c.ConsulRPCClient.Stats()
 	if err != nil {
 		return err
+		panic(err)
 	}
 
 	if stats["raft"]["commit_index"] != stats["raft"]["last_log_index"] {
-		return errors.New("some error")
+		return errors.New("Log not in sync")
+	}
+
+	if stats["raft"]["commit_index"] == "0" {
+		return errors.New("Commit index must not be zero")
 	}
 
 	return nil
